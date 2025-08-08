@@ -1,0 +1,13 @@
+[package]
+name = "socks-rust"
+version = "0.1.0"
+authors = ["Yeuham Wang <rcold@rcold.name>"]
+edition = "2024"
+license = "Apache-2.0"
+description = "A minimal SOCKS server implementation written in Rust"
+
+[dependencies]
+clap = { version = "4", default-features = false, features = ["derive", "help", "std", "usage"] }
+env_logger = { version = "0", default-features = false, features = ["auto-color", "humantime"] }
+log = { version = "0", default-features = false, features = [] }
+tokio = { version = "1", default-features = false, features = ["io-util", "macros", "net", "rt", "sync"] }
