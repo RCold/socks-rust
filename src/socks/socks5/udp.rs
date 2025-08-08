@@ -6,6 +6,7 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
+use tokio::net;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 
@@ -73,11 +74,10 @@ impl UdpSession {
                         Ok(remote_addr)
                     }
                     Address::DomainAddress(domain, port) => {
-                        for remote_addr in tokio::net::lookup_host((domain.as_str(), port)).await? {
-                            if local_addr.is_ipv4() && remote_addr.is_ipv4() {
-                                entry.insert(remote_addr);
-                                return Ok(remote_addr);
-                            } else if local_addr.is_ipv6() && remote_addr.is_ipv6() {
+                        for remote_addr in net::lookup_host((domain.as_str(), port)).await? {
+                            if (local_addr.is_ipv4() && remote_addr.is_ipv4())
+                                || (local_addr.is_ipv6() && remote_addr.is_ipv6())
+                            {
                                 entry.insert(remote_addr);
                                 return Ok(remote_addr);
                             }
