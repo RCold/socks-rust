@@ -22,7 +22,7 @@ async fn handle_remote_udp(
     manager: Arc<Mutex<UdpSessionManager>>,
 ) {
     if let Err(err) = udp::handle_remote(data.as_slice(), remote_addr, client_ip, manager).await {
-        error!("failed to handle remote udp from {remote_addr}: {err}");
+        error!("failed to handle udp packet from remote {remote_addr}: {err}");
     }
 }
 
@@ -91,7 +91,7 @@ async fn handle_udp_associate(
                         tokio::spawn(handle_remote_udp(udp_buf[..len].to_vec(), remote_addr, client_ip, manager.clone()));
                     }
                     Err(err) => {
-                        error!("invalid udp packet received: {err}");
+                        error!("failed to receive udp packet from remote: {err}");
                     }
                 }
             }

@@ -36,7 +36,7 @@ async fn main() {
         eprintln!("error: failed to bind to udp://{addr}: {err}");
         process::exit(1);
     });
-    println!("Serving SOCKS on {}", addr);
+    println!("Serving SOCKS on {addr}");
 
     socks::start_socks_server(tcp_listener, udp_socket).await;
 }
