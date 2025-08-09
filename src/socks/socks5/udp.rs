@@ -67,15 +67,15 @@ impl UdpSession {
     }
 
     async fn resolve_addr(&mut self, addr: &Address) -> io::Result<SocketAddr> {
-        Ok(match self.remote_addr_map.entry(addr.clone()) {
-            Entry::Occupied(entry) => *entry.into_mut(),
+        Ok(*match self.remote_addr_map.entry(addr.clone()) {
+            Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => match addr {
-                Address::SocketAddress(v) => *entry.insert(*v),
+                Address::SocketAddress(v) => entry.insert(*v),
                 Address::DomainAddress(domain, port) => {
                     match net::lookup_host((domain.as_str(), *port)).await?.next() {
                         Some(v) => {
                             debug!("domain name {domain} resolved to {}", v.ip());
-                            *entry.insert(v)
+                            entry.insert(v)
                         }
                         None => {
                             return Err(io::Error::new(
@@ -87,6 +87,14 @@ impl UdpSession {
                 }
             },
         })
+    }
+
+    fn insert_client_addr(&mut self, remote_addr: SocketAddr, client_addr: SocketAddr) {
+        self.client_addr_map.insert(remote_addr, client_addr);
+    }
+
+    fn get_client_addr(&self, remote_addr: &SocketAddr) -> Option<&SocketAddr> {
+        self.client_addr_map.get(remote_addr)
     }
 
     pub fn remote_socket_v4(&self) -> Arc<UdpSocket> {
@@ -166,14 +174,14 @@ pub async fn handle_client(
     let mut reader = BufReader::new(data);
     let header = UdpHeader::read_from(&mut reader).await?;
     let remote_addr = session.resolve_addr(&header.addr).await?;
+    session.insert_client_addr(remote_addr, client_addr);
+    let remote_socket = match remote_addr {
+        SocketAddr::V4(_) => session.remote_socket_v4(),
+        SocketAddr::V6(_) => session.remote_socket_v6(),
+    };
     let mut data = Vec::new();
     reader.read_to_end(&mut data).await?;
-    let remote_socket = match remote_addr {
-        SocketAddr::V4(_) => session.remote_socket_v4.as_ref(),
-        SocketAddr::V6(_) => session.remote_socket_v6.as_ref(),
-    };
     remote_socket.send_to(data.as_slice(), &remote_addr).await?;
-    session.client_addr_map.insert(remote_addr, client_addr);
     Ok(())
 }
 
@@ -184,10 +192,11 @@ pub async fn handle_remote(
     manager: Arc<Mutex<UdpSessionManager>>,
 ) -> Result<(), Error> {
     let manager = manager.lock().await;
+    let client_socket = manager.client_socket();
     let Some(session) = manager.get_session(&client_ip) else {
         return Err(Error::new(ErrorKind::InvalidUdpPacketReceived));
     };
-    let Some(client_addr) = session.client_addr_map.get(&remote_addr) else {
+    let Some(client_addr) = session.get_client_addr(&remote_addr) else {
         return Err(Error::new(ErrorKind::InvalidUdpPacketReceived));
     };
     let mut writer = BufWriter::new(Vec::new());
@@ -196,9 +205,6 @@ pub async fn handle_remote(
         .await?;
     writer.write_all(data).await?;
     writer.flush().await?;
-    manager
-        .client_socket()
-        .send_to(writer.get_ref(), &client_addr)
-        .await?;
+    client_socket.send_to(writer.get_ref(), client_addr).await?;
     Ok(())
 }
