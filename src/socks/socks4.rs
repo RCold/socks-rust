@@ -29,9 +29,13 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
     let port = stream.read_u16().await?;
     let mut ip = [0u8; 4];
     stream.read_exact(&mut ip).await?;
-    let _user_id = stream.read_until(0u8, &mut Vec::new()).await?;
 
-    let addr = if ip[..3] == [0, 0, 0] && ip[3] != 0 {
+    let mut stream = stream.take(255);
+    let mut _user_id = Vec::new();
+    stream.read_until(0u8, &mut _user_id).await?;
+
+    let mut stream = stream.into_inner().take(255);
+    let addr = if ip[..3] == [0u8, 0u8, 0u8] && ip[3] != 0u8 {
         let mut domain = Vec::new();
         stream.read_until(0u8, &mut domain).await?;
         domain.pop();
@@ -45,6 +49,7 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
         format!("{addr}:{port}")
     };
 
+    let mut stream = stream.into_inner();
     info!("socks4 request from client {client_addr} to tcp://{remote_addr} accepted");
     match TcpStream::connect(&remote_addr).await {
         Ok(mut remote) => {
