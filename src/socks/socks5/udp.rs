@@ -1,5 +1,6 @@
 use crate::socks::error::{Error, ErrorKind};
 use crate::socks::socks5::address::Address;
+use log::debug;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io;
@@ -47,49 +48,53 @@ impl UdpHeader {
 }
 
 pub struct UdpSession {
-    remote_socket: Arc<UdpSocket>,
+    remote_socket_v4: Arc<UdpSocket>,
+    remote_socket_v6: Arc<UdpSocket>,
     remote_addr_map: HashMap<Address, SocketAddr>,
     client_addr_map: HashMap<SocketAddr, SocketAddr>,
     ref_count: usize,
 }
 
 impl UdpSession {
-    fn _new(remote_socket: Arc<UdpSocket>) -> Self {
-        Self {
-            remote_socket,
+    async fn open() -> io::Result<Self> {
+        Ok(Self {
+            remote_socket_v4: Arc::new(UdpSocket::bind("0.0.0.0:0").await?),
+            remote_socket_v6: Arc::new(UdpSocket::bind("[::]:0").await?),
             remote_addr_map: HashMap::new(),
             client_addr_map: HashMap::new(),
             ref_count: 1,
-        }
+        })
     }
 
-    pub async fn resolve_addr(&mut self, addr: Address) -> io::Result<SocketAddr> {
-        match self.remote_addr_map.entry(addr.clone()) {
-            Entry::Occupied(entry) => Ok(*entry.into_mut()),
-            Entry::Vacant(entry) => {
-                let local_addr = self.remote_socket.local_addr()?;
-                match addr {
-                    Address::SocketAddress(remote_addr) => {
-                        entry.insert(remote_addr);
-                        Ok(remote_addr)
-                    }
-                    Address::DomainAddress(domain, port) => {
-                        for remote_addr in net::lookup_host((domain.as_str(), port)).await? {
-                            if (local_addr.is_ipv4() && remote_addr.is_ipv4())
-                                || (local_addr.is_ipv6() && remote_addr.is_ipv6())
-                            {
-                                entry.insert(remote_addr);
-                                return Ok(remote_addr);
-                            }
+    async fn resolve_addr(&mut self, addr: &Address) -> io::Result<SocketAddr> {
+        Ok(match self.remote_addr_map.entry(addr.clone()) {
+            Entry::Occupied(entry) => *entry.into_mut(),
+            Entry::Vacant(entry) => match addr {
+                Address::SocketAddress(v) => *entry.insert(*v),
+                Address::DomainAddress(domain, port) => {
+                    match net::lookup_host((domain.as_str(), *port)).await?.next() {
+                        Some(v) => {
+                            debug!("domain name {domain} resolved to {}", v.ip());
+                            *entry.insert(v)
                         }
-                        Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "no addresses to send data to",
-                        ))
+                        None => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "no addresses to send data to",
+                            ));
+                        }
                     }
                 }
-            }
-        }
+            },
+        })
+    }
+
+    pub fn remote_socket_v4(&self) -> Arc<UdpSocket> {
+        self.remote_socket_v4.clone()
+    }
+
+    pub fn remote_socket_v6(&self) -> Arc<UdpSocket> {
+        self.remote_socket_v6.clone()
     }
 }
 
@@ -110,22 +115,25 @@ impl UdpSessionManager {
         self.client_socket.clone()
     }
 
-    pub fn open_session(&mut self, client_ip: IpAddr, remote_socket: Arc<UdpSocket>) {
-        match self.session_map.entry(client_ip) {
+    pub async fn open_session(&mut self, client_ip: IpAddr) -> io::Result<&mut UdpSession> {
+        Ok(match self.session_map.entry(client_ip) {
             Entry::Occupied(entry) => {
                 let session = entry.into_mut();
                 session.ref_count += 1;
+                session
             }
             Entry::Vacant(entry) => {
-                entry.insert(UdpSession::_new(remote_socket));
+                debug!("udp session for client {client_ip} opened");
+                entry.insert(UdpSession::open().await?)
             }
-        }
+        })
     }
 
     pub fn close_session(&mut self, client_ip: &IpAddr) {
         if let Some(session) = self.session_map.get_mut(client_ip) {
             session.ref_count -= 1;
             if session.ref_count < 1 {
+                debug!("udp session for client {client_ip} closed");
                 self.session_map.remove(&client_ip);
             }
         }
@@ -157,13 +165,14 @@ pub async fn handle_client(
     };
     let mut reader = BufReader::new(data);
     let header = UdpHeader::read_from(&mut reader).await?;
-    let remote_addr = session.resolve_addr(header.addr).await?;
+    let remote_addr = session.resolve_addr(&header.addr).await?;
     let mut data = Vec::new();
     reader.read_to_end(&mut data).await?;
-    session
-        .remote_socket
-        .send_to(data.as_slice(), &remote_addr)
-        .await?;
+    let remote_socket = match remote_addr {
+        SocketAddr::V4(_) => session.remote_socket_v4.as_ref(),
+        SocketAddr::V6(_) => session.remote_socket_v6.as_ref(),
+    };
+    remote_socket.send_to(data.as_slice(), &remote_addr).await?;
     session.client_addr_map.insert(remote_addr, client_addr);
     Ok(())
 }

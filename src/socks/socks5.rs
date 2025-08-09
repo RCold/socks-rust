@@ -11,7 +11,7 @@ use log::{debug, error, info};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, BufStream};
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::Mutex;
 
@@ -48,47 +48,53 @@ async fn handle_connect(stream: &mut BufStream<TcpStream>, remote_addr: &str) ->
 
 async fn handle_udp_associate(
     stream: &mut BufStream<TcpStream>,
-    addr: Address,
     client_ip: IpAddr,
     manager: Arc<Mutex<UdpSessionManager>>,
 ) -> Result<(), Error> {
-    let bind_addr = match addr {
-        Address::SocketAddress(SocketAddr::V4(_)) => "0.0.0.0:0",
-        Address::SocketAddress(SocketAddr::V6(_)) => "[::]:0",
-        Address::DomainAddress(_, _) => match client_ip {
-            IpAddr::V4(_) => "0.0.0.0:0",
-            IpAddr::V6(_) => "[::]:0",
-        },
-    };
-    let remote_socket = match UdpSocket::bind(bind_addr).await {
-        Ok(v) => Arc::new(v),
-        Err(err) => {
-            TcpReply::new(Reply::GeneralFailure as u8, None)
-                .write_to(stream)
-                .await?;
-            return Err(err.into());
-        }
-    };
+    let remote_socket_v4;
+    let remote_socket_v6;
     {
         let mut manager = manager.lock().await;
-        let client_socket = manager.client_socket();
-        manager.open_session(client_ip, remote_socket.clone());
+        let session = match manager.open_session(client_ip).await {
+            Ok(v) => v,
+            Err(err) => {
+                TcpReply::new(Reply::GeneralFailure as u8, None)
+                    .write_to(stream)
+                    .await?;
+                return Err(err.into());
+            }
+        };
+        remote_socket_v4 = session.remote_socket_v4();
+        remote_socket_v6 = session.remote_socket_v6();
         TcpReply::new(
             Reply::Succeeded as u8,
-            Some(Address::SocketAddress(client_socket.local_addr()?)),
+            Some(Address::SocketAddress(
+                manager.client_socket().local_addr()?,
+            )),
         )
         .write_to(stream)
         .await?;
     }
-    let mut tcp_buf = [0u8; 65535];
-    let mut udp_buf = [0u8; 65535];
+    let mut tcp_buf = [0u8; 65536];
+    let mut udp_v4_buf = [0u8; 65536];
+    let mut udp_v6_buf = [0u8; 65536];
     loop {
         select! {
             v = stream.read(&mut tcp_buf) => if v? == 0 { break; },
-            v = remote_socket.recv_from(&mut udp_buf) => {
+            v = remote_socket_v4.recv_from(&mut udp_v4_buf) => {
                 match v {
                     Ok((len, remote_addr)) => {
-                        tokio::spawn(handle_remote_udp(udp_buf[..len].to_vec(), remote_addr, client_ip, manager.clone()));
+                        tokio::spawn(handle_remote_udp(udp_v4_buf[..len].to_vec(), remote_addr, client_ip, manager.clone()));
+                    }
+                    Err(err) => {
+                        error!("failed to receive udp packet from remote: {err}");
+                    }
+                }
+            }
+            v = remote_socket_v6.recv_from(&mut udp_v6_buf) => {
+                match v {
+                    Ok((len, remote_addr)) => {
+                        tokio::spawn(handle_remote_udp(udp_v6_buf[..len].to_vec(), remote_addr, client_ip, manager.clone()));
                     }
                     Err(err) => {
                         error!("failed to receive udp packet from remote: {err}");
@@ -130,7 +136,7 @@ pub async fn handle_tcp(
             info!(
                 "socks5 udp associate request from client {client_addr} to udp://{remote_addr} accepted"
             );
-            handle_udp_associate(&mut stream, request.addr, client_addr.ip(), manager).await?;
+            handle_udp_associate(&mut stream, client_addr.ip(), manager).await?;
         }
     }
 
