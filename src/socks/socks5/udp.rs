@@ -167,18 +167,22 @@ pub async fn handle_client(
     client_addr: SocketAddr,
     manager: Arc<Mutex<UdpSessionManager>>,
 ) -> Result<(), Error> {
-    let mut manager = manager.lock().await;
-    let Some(session) = manager.get_session_mut(&client_addr.ip()) else {
-        return Err(Error::new(ErrorKind::InvalidUdpPacketReceived));
-    };
+    let remote_socket;
+    let remote_addr;
     let mut reader = BufReader::new(data);
-    let header = UdpHeader::read_from(&mut reader).await?;
-    let remote_addr = session.resolve_addr(&header.addr).await?;
-    session.insert_client_addr(remote_addr, client_addr);
-    let remote_socket = match remote_addr {
-        SocketAddr::V4(_) => session.remote_socket_v4(),
-        SocketAddr::V6(_) => session.remote_socket_v6(),
-    };
+    {
+        let mut manager = manager.lock().await;
+        let Some(session) = manager.get_session_mut(&client_addr.ip()) else {
+            return Err(Error::new(ErrorKind::InvalidUdpPacketReceived));
+        };
+        let header = UdpHeader::read_from(&mut reader).await?;
+        remote_addr = session.resolve_addr(&header.addr).await?;
+        session.insert_client_addr(remote_addr, client_addr);
+        remote_socket = match remote_addr {
+            SocketAddr::V4(_) => session.remote_socket_v4(),
+            SocketAddr::V6(_) => session.remote_socket_v6(),
+        };
+    }
     let mut data = Vec::new();
     reader.read_to_end(&mut data).await?;
     remote_socket.send_to(data.as_slice(), &remote_addr).await?;
@@ -191,20 +195,27 @@ pub async fn handle_remote(
     client_ip: IpAddr,
     manager: Arc<Mutex<UdpSessionManager>>,
 ) -> Result<(), Error> {
-    let manager = manager.lock().await;
-    let client_socket = manager.client_socket();
-    let Some(session) = manager.get_session(&client_ip) else {
-        return Err(Error::new(ErrorKind::InvalidUdpPacketReceived));
-    };
-    let Some(client_addr) = session.get_client_addr(&remote_addr) else {
-        return Err(Error::new(ErrorKind::InvalidUdpPacketReceived));
-    };
+    let client_socket;
+    let client_addr;
+    {
+        let manager = manager.lock().await;
+        client_socket = manager.client_socket();
+        let Some(session) = manager.get_session(&client_ip) else {
+            return Err(Error::new(ErrorKind::InvalidUdpPacketReceived));
+        };
+        match session.get_client_addr(&remote_addr) {
+            Some(v) => client_addr = *v,
+            None => {
+                return Err(Error::new(ErrorKind::InvalidUdpPacketReceived));
+            }
+        };
+    }
     let mut writer = BufWriter::new(Vec::new());
     UdpHeader::new(Address::SocketAddress(remote_addr))
         .write_to(&mut writer)
         .await?;
     writer.write_all(data).await?;
     writer.flush().await?;
-    client_socket.send_to(writer.get_ref(), client_addr).await?;
+    client_socket.send_to(writer.get_ref(), &client_addr).await?;
     Ok(())
 }
