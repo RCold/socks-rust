@@ -17,7 +17,7 @@ pub struct Args {
     pub port: u16,
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() {
     env_logger::init();
 

@@ -7,7 +7,22 @@ license = "Apache-2.0"
 description = "A minimal SOCKS server implementation written in Rust"
 
 [dependencies]
-clap = { version = "4", default-features = false, features = ["derive", "help", "std", "usage"] }
-env_logger = { version = "0", default-features = false, features = ["auto-color", "humantime"] }
-log = { version = "0", default-features = false, features = [] }
-tokio = { version = "1", default-features = false, features = ["io-util", "macros", "net", "rt", "sync"] }
+
+[dependencies.clap]
+version = "4"
+default-features = false
+features = ["derive", "help", "std", "usage"]
+
+[dependencies.env_logger]
+version = "0"
+default-features = false
+features = ["auto-color", "humantime"]
+
+[dependencies.log]
+version = "0"
+default-features = false
+
+[dependencies.tokio]
+version = "1"
+default-features = false
+features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync"]
