@@ -11,12 +11,12 @@ use tokio::net;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 
-struct UdpHeader {
+struct Header {
     _frag: u8,
     addr: Address,
 }
 
-impl UdpHeader {
+impl Header {
     fn new(addr: Address) -> Self {
         Self { _frag: 0, addr }
     }
@@ -47,7 +47,7 @@ impl UdpHeader {
     }
 }
 
-pub struct UdpSession {
+pub struct Session {
     remote_socket_v4: Arc<UdpSocket>,
     remote_socket_v6: Arc<UdpSocket>,
     remote_addr_map: HashMap<Address, SocketAddr>,
@@ -55,7 +55,7 @@ pub struct UdpSession {
     ref_count: usize,
 }
 
-impl UdpSession {
+impl Session {
     async fn open() -> io::Result<Self> {
         Ok(Self {
             remote_socket_v4: Arc::new(UdpSocket::bind("0.0.0.0:0").await?),
@@ -72,18 +72,15 @@ impl UdpSession {
             Entry::Vacant(entry) => match addr {
                 Address::SocketAddress(v) => entry.insert(*v),
                 Address::DomainAddress(domain, port) => {
-                    match net::lookup_host((domain.as_str(), *port)).await?.next() {
-                        Some(v) => {
-                            debug!("domain name {domain} resolved to {}", v.ip());
-                            entry.insert(v)
-                        }
-                        None => {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidInput,
-                                "no addresses to send data to",
-                            ));
-                        }
-                    }
+                    let v = net::lookup_host((domain.as_str(), *port))
+                        .await?
+                        .next()
+                        .ok_or(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "no addresses to send data to",
+                        ))?;
+                    debug!("domain name {domain} resolved to {}", v.ip());
+                    entry.insert(v)
                 }
             },
         })
@@ -106,12 +103,12 @@ impl UdpSession {
     }
 }
 
-pub struct UdpSessionManager {
+pub struct SessionManager {
     client_socket: Arc<UdpSocket>,
-    session_map: HashMap<IpAddr, UdpSession>,
+    session_map: HashMap<IpAddr, Session>,
 }
 
-impl UdpSessionManager {
+impl SessionManager {
     pub fn new(client_socket: Arc<UdpSocket>) -> Self {
         Self {
             client_socket,
@@ -123,7 +120,7 @@ impl UdpSessionManager {
         self.client_socket.clone()
     }
 
-    pub async fn open_session(&mut self, client_ip: IpAddr) -> io::Result<&mut UdpSession> {
+    pub async fn open_session(&mut self, client_ip: IpAddr) -> io::Result<&mut Session> {
         Ok(match self.session_map.entry(client_ip) {
             Entry::Occupied(entry) => {
                 let session = entry.into_mut();
@@ -132,7 +129,7 @@ impl UdpSessionManager {
             }
             Entry::Vacant(entry) => {
                 debug!("udp session for client {client_ip} opened");
-                entry.insert(UdpSession::open().await?)
+                entry.insert(Session::open().await?)
             }
         })
     }
@@ -147,35 +144,29 @@ impl UdpSessionManager {
         }
     }
 
-    pub fn get_session(&self, client_ip: &IpAddr) -> Option<&UdpSession> {
-        let Some(session) = self.session_map.get(client_ip) else {
-            return None;
-        };
-        Some(session)
+    pub fn get_session(&self, client_ip: &IpAddr) -> Option<&Session> {
+        self.session_map.get(client_ip)
     }
 
-    pub fn get_session_mut(&mut self, client_ip: &IpAddr) -> Option<&mut UdpSession> {
-        let Some(session) = self.session_map.get_mut(client_ip) else {
-            return None;
-        };
-        Some(session)
+    pub fn get_session_mut(&mut self, client_ip: &IpAddr) -> Option<&mut Session> {
+        self.session_map.get_mut(client_ip)
     }
 }
 
 pub async fn handle_client(
     data: &[u8],
     client_addr: SocketAddr,
-    manager: Arc<Mutex<UdpSessionManager>>,
+    manager: Arc<Mutex<SessionManager>>,
 ) -> Result<(), Error> {
     let remote_socket;
     let remote_addr;
     let mut reader = BufReader::new(data);
     {
         let mut manager = manager.lock().await;
-        let Some(session) = manager.get_session_mut(&client_addr.ip()) else {
-            return Err(Error::new(ErrorKind::InvalidUdpPacketReceived));
-        };
-        let header = UdpHeader::read_from(&mut reader).await?;
+        let session = manager
+            .get_session_mut(&client_addr.ip())
+            .ok_or(Error::new(ErrorKind::InvalidUdpPacketReceived))?;
+        let header = Header::read_from(&mut reader).await?;
         remote_addr = session.resolve_addr(&header.addr).await?;
         session.insert_client_addr(remote_addr, client_addr);
         remote_socket = match remote_addr {
@@ -193,29 +184,28 @@ pub async fn handle_remote(
     data: &[u8],
     remote_addr: SocketAddr,
     client_ip: IpAddr,
-    manager: Arc<Mutex<UdpSessionManager>>,
+    manager: Arc<Mutex<SessionManager>>,
 ) -> Result<(), Error> {
     let client_socket;
     let client_addr;
     {
         let manager = manager.lock().await;
         client_socket = manager.client_socket();
-        let Some(session) = manager.get_session(&client_ip) else {
-            return Err(Error::new(ErrorKind::InvalidUdpPacketReceived));
-        };
-        match session.get_client_addr(&remote_addr) {
-            Some(v) => client_addr = *v,
-            None => {
-                return Err(Error::new(ErrorKind::InvalidUdpPacketReceived));
-            }
-        };
+        let session = manager
+            .get_session(&client_ip)
+            .ok_or(Error::new(ErrorKind::InvalidUdpPacketReceived))?;
+        client_addr = *session
+            .get_client_addr(&remote_addr)
+            .ok_or(Error::new(ErrorKind::InvalidUdpPacketReceived))?;
     }
     let mut writer = BufWriter::new(Vec::new());
-    UdpHeader::new(Address::SocketAddress(remote_addr))
+    Header::new(Address::SocketAddress(remote_addr))
         .write_to(&mut writer)
         .await?;
     writer.write_all(data).await?;
     writer.flush().await?;
-    client_socket.send_to(writer.get_ref(), &client_addr).await?;
+    client_socket
+        .send_to(writer.get_ref(), &client_addr)
+        .await?;
     Ok(())
 }

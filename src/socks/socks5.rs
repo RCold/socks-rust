@@ -1,12 +1,13 @@
 mod address;
+mod auth;
 mod tcp;
 mod udp;
 
 use crate::socks::error::Error;
 use crate::socks::socks5::address::Address;
-use crate::socks::socks5::tcp::{Command, Reply, TcpReply, TcpRequest};
+use crate::socks::socks5::tcp::{Command, Reply, ReplyCode, Request};
 pub use crate::socks::socks5::udp::handle_client as handle_udp;
-pub use crate::socks::socks5::udp::UdpSessionManager;
+pub use crate::socks::socks5::udp::SessionManager as UdpSessionManager;
 use log::{debug, error, info};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -30,7 +31,7 @@ async fn handle_connect(stream: &mut BufStream<TcpStream>, remote_addr: &str) ->
     match TcpStream::connect(remote_addr).await {
         Ok(mut remote) => {
             debug!("tcp://{remote_addr} connected");
-            TcpReply::new(Reply::Succeeded as u8, None)
+            Reply::new(ReplyCode::Succeeded as u8, None)
                 .write_to(stream)
                 .await?;
             tokio::io::copy_bidirectional(stream, &mut remote).await?;
@@ -38,9 +39,10 @@ async fn handle_connect(stream: &mut BufStream<TcpStream>, remote_addr: &str) ->
             Ok(())
         }
         Err(err) => {
-            TcpReply::new(Reply::GeneralFailure as u8, None)
+            Reply::new(ReplyCode::GeneralFailure as u8, None)
                 .write_to(stream)
-                .await?;
+                .await
+                .unwrap_or(());
             Err(err.into())
         }
     }
@@ -53,28 +55,29 @@ async fn handle_udp_associate(
 ) -> Result<(), Error> {
     let remote_socket_v4;
     let remote_socket_v6;
+    let local_addr;
     {
         let mut manager = manager.lock().await;
+        local_addr = manager.client_socket().local_addr()?;
         let session = match manager.open_session(client_ip).await {
             Ok(v) => v,
             Err(err) => {
-                TcpReply::new(Reply::GeneralFailure as u8, None)
+                Reply::new(ReplyCode::GeneralFailure as u8, None)
                     .write_to(stream)
-                    .await?;
+                    .await
+                    .unwrap_or(());
                 return Err(err.into());
             }
         };
         remote_socket_v4 = session.remote_socket_v4();
         remote_socket_v6 = session.remote_socket_v6();
-        TcpReply::new(
-            Reply::Succeeded as u8,
-            Some(Address::SocketAddress(
-                manager.client_socket().local_addr()?,
-            )),
-        )
-        .write_to(stream)
-        .await?;
     }
+    Reply::new(
+        ReplyCode::Succeeded as u8,
+        Some(Address::SocketAddress(local_addr)),
+    )
+    .write_to(stream)
+    .await?;
     let mut tcp_buf = [0u8; 65536];
     let mut udp_v4_buf = [0u8; 65536];
     let mut udp_v6_buf = [0u8; 65536];
@@ -116,7 +119,8 @@ pub async fn handle_tcp(
     manager: Arc<Mutex<UdpSessionManager>>,
 ) -> Result<(), Error> {
     let mut stream = BufStream::new(stream);
-    let request = TcpRequest::read_from(&mut stream).await?;
+    auth::authenticate(&mut stream).await?;
+    let request = Request::read_from(&mut stream).await?;
     let remote_addr = request.addr.to_string();
 
     match request.cmd {
@@ -128,7 +132,7 @@ pub async fn handle_tcp(
         }
         Command::Bind => {
             info!("socks5 bind request from client {client_addr} rejected: not implemented");
-            TcpReply::new(Reply::CommandNotSupported as u8, None)
+            Reply::new(ReplyCode::CommandNotSupported as u8, None)
                 .write_to(&mut stream)
                 .await?;
         }

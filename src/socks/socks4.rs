@@ -23,7 +23,9 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
     let mut stream = BufStream::new(stream);
     let cmd = stream.read_u8().await?;
     if cmd != 1u8 {
-        send_response(&mut stream, Reply::RequestRejectedOrFailed).await?;
+        send_response(&mut stream, Reply::RequestRejectedOrFailed)
+            .await
+            .unwrap_or(());
         return Err(Error::new(ErrorKind::CommandNotSupported));
     }
     let port = stream.read_u16().await?;
@@ -60,7 +62,9 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
             Ok(())
         }
         Err(err) => {
-            send_response(&mut stream, Reply::RequestRejectedOrFailed).await?;
+            send_response(&mut stream, Reply::RequestRejectedOrFailed)
+                .await
+                .unwrap_or(());
             Err(err.into())
         }
     }

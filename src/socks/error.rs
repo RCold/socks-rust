@@ -4,7 +4,7 @@ use std::{error, fmt, io};
 pub enum ErrorKind {
     IoError,
     VersionMismatch,
-    NoAcceptableMethod,
+    NoAcceptableAuthMethods,
     AddressTypeNotSupported,
     CommandNotSupported,
     InvalidDomainName,
@@ -34,7 +34,7 @@ impl fmt::Display for Error {
                 write!(f, "{}", self.cause.as_ref().unwrap())
             }
             ErrorKind::VersionMismatch => write!(f, "version mismatch"),
-            ErrorKind::NoAcceptableMethod => write!(f, "no acceptable methods"),
+            ErrorKind::NoAcceptableAuthMethods => write!(f, "no acceptable authentication methods"),
             ErrorKind::AddressTypeNotSupported => write!(f, "address type not supported"),
             ErrorKind::CommandNotSupported => write!(f, "command not supported"),
             ErrorKind::InvalidDomainName => write!(f, "invalid domain name"),
