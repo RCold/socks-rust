@@ -1,19 +1,24 @@
 mod socks;
 
-use clap::Parser;
+use clap::{arg, Parser};
+use std::net::Ipv6Addr;
 use std::process;
+use std::str::FromStr;
 use tokio::net::{TcpListener, UdpSocket};
 
 #[derive(Parser)]
+#[command(version)]
 pub struct Args {
     #[arg(
-        help = "specify bind address [default: 0.0.0.0]",
-        long = "bind",
-        short = 'b'
+        default_value = "0.0.0.0",
+        help = "Specify bind address",
+        long,
+        short,
+        value_name = "ADDRESS"
     )]
-    pub address: Option<String>,
+    pub bind: String,
 
-    #[arg(help = "specify bind port", default_value_t = 1080)]
+    #[arg(default_value_t = 1080, help = "Specify bind port")]
     pub port: u16,
 }
 
@@ -22,21 +27,21 @@ async fn main() {
     env_logger::init();
 
     let args = Args::parse();
-    let addr = format!(
-        "{}:{}",
-        args.address.unwrap_or_else(|| String::from("0.0.0.0")),
-        args.port
-    );
+    let bind = if let Ok(addr) = Ipv6Addr::from_str(&args.bind) {
+        format!("[{addr}]:{}", args.port)
+    } else {
+        format!("{}:{}", args.bind, args.port)
+    };
 
-    let tcp_listener = TcpListener::bind(&addr).await.unwrap_or_else(|err| {
-        eprintln!("error: failed to bind to tcp://{addr}: {err}");
+    let tcp_listener = TcpListener::bind(&bind).await.unwrap_or_else(|err| {
+        eprintln!("error: failed to bind to tcp://{bind}: {err}");
         process::exit(1);
     });
-    let udp_socket = UdpSocket::bind(&addr).await.unwrap_or_else(|err| {
-        eprintln!("error: failed to bind to udp://{addr}: {err}");
+    let udp_socket = UdpSocket::bind(&bind).await.unwrap_or_else(|err| {
+        eprintln!("error: failed to bind to udp://{bind}: {err}");
         process::exit(1);
     });
-    println!("Serving SOCKS on {addr}");
+    println!("Serving SOCKS on {bind}");
 
     socks::start_socks_server(tcp_listener, udp_socket).await;
 }
