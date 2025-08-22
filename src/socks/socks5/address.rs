@@ -19,10 +19,7 @@ pub enum Address {
 }
 
 impl Address {
-    pub async fn read_from<R>(reader: &mut R) -> Result<Self, Error>
-    where
-        R: AsyncRead + Unpin,
-    {
+    pub async fn read_from<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Self, Error> {
         let addr_type = reader.read_u8().await?;
 
         if addr_type == AddrType::IPv4 as u8 {
@@ -54,10 +51,7 @@ impl Address {
         }
     }
 
-    pub async fn write_to<W>(&self, writer: &mut W) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
+    pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> io::Result<()> {
         match self {
             Self::SocketAddress(SocketAddr::V4(addr)) => {
                 writer.write_u8(AddrType::IPv4 as u8).await?;

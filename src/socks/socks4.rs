@@ -2,6 +2,7 @@ use crate::socks::error::{Error, ErrorKind};
 use log::{debug, info};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
+use tokio::io;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufStream};
 use tokio::net::TcpStream;
 
@@ -25,7 +26,7 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
     if cmd != 1u8 {
         send_response(&mut stream, Reply::RequestRejectedOrFailed)
             .await
-            .unwrap_or(());
+            .unwrap_or_default();
         return Err(Error::new(ErrorKind::CommandNotSupported));
     }
     let port = stream.read_u16().await?;
@@ -57,14 +58,14 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
         Ok(mut remote) => {
             debug!("tcp://{remote_addr} connected");
             send_response(&mut stream, Reply::RequestGranted).await?;
-            tokio::io::copy_bidirectional(&mut stream, &mut remote).await?;
+            io::copy_bidirectional(&mut stream, &mut remote).await?;
             debug!("tcp://{remote_addr} disconnected");
             Ok(())
         }
         Err(err) => {
             send_response(&mut stream, Reply::RequestRejectedOrFailed)
                 .await
-                .unwrap_or(());
+                .unwrap_or_default();
             Err(err.into())
         }
     }

@@ -4,7 +4,7 @@ use clap::{arg, Parser};
 use std::net::Ipv6Addr;
 use std::process;
 use std::str::FromStr;
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::net::TcpListener;
 
 #[derive(Parser)]
 #[command(version)]
@@ -37,11 +37,7 @@ async fn main() {
         eprintln!("error: failed to bind to tcp://{bind}: {err}");
         process::exit(1);
     });
-    let udp_socket = UdpSocket::bind(&bind).await.unwrap_or_else(|err| {
-        eprintln!("error: failed to bind to udp://{bind}: {err}");
-        process::exit(1);
-    });
     println!("Serving SOCKS on {bind}");
 
-    socks::start_socks_server(tcp_listener, udp_socket).await;
+    socks::start_socks_server(tcp_listener).await;
 }

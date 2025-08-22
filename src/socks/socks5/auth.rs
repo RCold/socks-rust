@@ -18,10 +18,7 @@ impl Reply {
         Self { method }
     }
 
-    async fn write_to<W>(&self, writer: &mut W) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
+    async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> io::Result<()> {
         writer.write_all(&[5u8, self.method]).await?;
         writer.flush().await
     }
@@ -41,7 +38,7 @@ where
         Reply::new(Method::NoAcceptable as u8)
             .write_to(stream)
             .await
-            .unwrap_or(());
+            .unwrap_or_default();
         Err(Error::new(ErrorKind::NoAcceptableAuthMethods))
     }
 }

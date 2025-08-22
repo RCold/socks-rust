@@ -4,27 +4,29 @@ use log::debug;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io;
-use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
+use std::net::SocketAddr;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net;
-use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
+use tokio::net::{ToSocketAddrs, UdpSocket};
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::task::AbortHandle;
 
-struct Header {
+pub struct UdpHeader {
     _frag: u8,
     addr: Address,
 }
 
-impl Header {
-    fn new(addr: Address) -> Self {
+impl UdpHeader {
+    pub fn new(addr: Address) -> Self {
         Self { _frag: 0, addr }
     }
 
-    async fn read_from<R>(reader: &mut R) -> Result<Self, Error>
-    where
-        R: AsyncRead + Unpin,
-    {
+    pub fn addr(&self) -> &Address {
+        &self.addr
+    }
+
+    pub async fn read_from<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Self, Error> {
         let _rsv = reader.read_u16().await?;
         let frag = reader.read_u8().await?;
         if frag != 0u8 {
@@ -34,40 +36,50 @@ impl Header {
         Ok(Self { _frag: frag, addr })
     }
 
-    async fn write_to<W>(&self, writer: &mut W) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
+    pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> io::Result<()> {
         writer.write_all(&[0u8, 0u8, self._frag]).await?;
         self.addr.write_to(writer).await
     }
 
-    fn _serialized_len(&self) -> usize {
+    pub fn _serialized_len(&self) -> usize {
         2 + 1 + self.addr._serialized_len()
     }
 }
 
-pub struct Session {
-    remote_socket_v4: Arc<UdpSocket>,
-    remote_socket_v6: Arc<UdpSocket>,
-    remote_addr_map: HashMap<Address, SocketAddr>,
-    client_addr_map: HashMap<SocketAddr, SocketAddr>,
-    ref_count: usize,
+pub struct UdpSession {
+    peer_addr: SocketAddr,
+    tx: Sender<(Vec<u8>, SocketAddr)>,
+    rx: Receiver<Vec<u8>>,
+    resolve_cache: HashMap<Address, SocketAddr>,
 }
 
-impl Session {
-    async fn open() -> io::Result<Self> {
-        Ok(Self {
-            remote_socket_v4: Arc::new(UdpSocket::bind("0.0.0.0:0").await?),
-            remote_socket_v6: Arc::new(UdpSocket::bind("[::]:0").await?),
-            remote_addr_map: HashMap::new(),
-            client_addr_map: HashMap::new(),
-            ref_count: 1,
-        })
+impl UdpSession {
+    fn new(
+        peer_addr: SocketAddr,
+        tx: Sender<(Vec<u8>, SocketAddr)>,
+        rx: Receiver<Vec<u8>>,
+    ) -> Self {
+        Self {
+            peer_addr,
+            tx,
+            rx,
+            resolve_cache: HashMap::new(),
+        }
     }
 
-    async fn resolve_addr(&mut self, addr: &Address) -> io::Result<SocketAddr> {
-        Ok(*match self.remote_addr_map.entry(addr.clone()) {
+    pub async fn send(&self, data: Vec<u8>) -> io::Result<()> {
+        self.tx
+            .send((data, self.peer_addr))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "failed to send udp packet"))
+    }
+
+    pub async fn recv(&mut self) -> Option<Vec<u8>> {
+        self.rx.recv().await
+    }
+
+    pub async fn resolve_addr(&mut self, addr: &Address) -> io::Result<SocketAddr> {
+        Ok(*match self.resolve_cache.entry(addr.clone()) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => match addr {
                 Address::SocketAddress(v) => entry.insert(*v),
@@ -85,127 +97,69 @@ impl Session {
             },
         })
     }
-
-    fn insert_client_addr(&mut self, remote_addr: SocketAddr, client_addr: SocketAddr) {
-        self.client_addr_map.insert(remote_addr, client_addr);
-    }
-
-    fn get_client_addr(&self, remote_addr: &SocketAddr) -> Option<&SocketAddr> {
-        self.client_addr_map.get(remote_addr)
-    }
-
-    pub fn remote_socket_v4(&self) -> Arc<UdpSocket> {
-        self.remote_socket_v4.clone()
-    }
-
-    pub fn remote_socket_v6(&self) -> Arc<UdpSocket> {
-        self.remote_socket_v6.clone()
-    }
 }
 
-pub struct SessionManager {
-    client_socket: Arc<UdpSocket>,
-    session_map: HashMap<IpAddr, Session>,
+pub struct UdpListener {
+    local_addr: SocketAddr,
+    accept_rx: Receiver<io::Result<(UdpSession, SocketAddr)>>,
+    abort_handle: AbortHandle,
 }
 
-impl SessionManager {
-    pub fn new(client_socket: Arc<UdpSocket>) -> Self {
-        Self {
-            client_socket,
-            session_map: HashMap::new(),
-        }
-    }
-
-    pub fn client_socket(&self) -> Arc<UdpSocket> {
-        self.client_socket.clone()
-    }
-
-    pub async fn open_session(&mut self, client_ip: IpAddr) -> io::Result<&mut Session> {
-        Ok(match self.session_map.entry(client_ip) {
-            Entry::Occupied(entry) => {
-                let session = entry.into_mut();
-                session.ref_count += 1;
-                session
+impl UdpListener {
+    pub async fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {
+        let socket = UdpSocket::bind(addr).await?;
+        let local_addr = socket.local_addr()?;
+        let (accept_tx, accept_rx) = mpsc::channel(32);
+        let abort_handle = tokio::spawn(async move {
+            let (send_tx, mut send_rx) = mpsc::channel(32);
+            let mut clients: HashMap<SocketAddr, Sender<Vec<u8>>> = HashMap::new();
+            let mut buf = [0u8; 65536];
+            loop {
+                tokio::select! {
+                    v = socket.recv_from(&mut buf) => {
+                        match v {
+                            Ok((len, addr)) => {
+                                let data = buf[..len].to_vec();
+                                match clients.entry(addr) {
+                                    Entry::Occupied(entry) => {
+                                        entry.into_mut().send(data).await.unwrap_or_default();
+                                    }
+                                    Entry::Vacant(entry) => {
+                                        let (tx, rx) = mpsc::channel(32);
+                                        entry.insert(tx).send(data).await.unwrap();
+                                        let session = UdpSession::new(addr, send_tx.clone(), rx);
+                                        accept_tx.send(Ok((session, addr))).await.unwrap();
+                                    }
+                                }
+                            }
+                            Err(err) => accept_tx.send(Err(err)).await.unwrap(),
+                        }
+                    }
+                    Some((data, addr)) = send_rx.recv() => {
+                        socket.send_to(data.as_slice(), &addr).await.unwrap_or_default();
+                    }
+                }
             }
-            Entry::Vacant(entry) => {
-                debug!("udp session for client {client_ip} opened");
-                entry.insert(Session::open().await?)
-            }
+        })
+        .abort_handle();
+        Ok(Self {
+            local_addr,
+            accept_rx,
+            abort_handle,
         })
     }
 
-    pub fn close_session(&mut self, client_ip: &IpAddr) {
-        if let Some(session) = self.session_map.get_mut(client_ip) {
-            session.ref_count -= 1;
-            if session.ref_count < 1 {
-                debug!("udp session for client {client_ip} closed");
-                self.session_map.remove(&client_ip);
-            }
-        }
+    pub async fn accept(&mut self) -> io::Result<(UdpSession, SocketAddr)> {
+        self.accept_rx.recv().await.unwrap()
     }
 
-    pub fn get_session(&self, client_ip: &IpAddr) -> Option<&Session> {
-        self.session_map.get(client_ip)
-    }
-
-    pub fn get_session_mut(&mut self, client_ip: &IpAddr) -> Option<&mut Session> {
-        self.session_map.get_mut(client_ip)
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
     }
 }
 
-pub async fn handle_client(
-    data: &[u8],
-    client_addr: SocketAddr,
-    manager: Arc<Mutex<SessionManager>>,
-) -> Result<(), Error> {
-    let remote_socket;
-    let remote_addr;
-    let mut reader = BufReader::new(data);
-    {
-        let mut manager = manager.lock().await;
-        let session = manager
-            .get_session_mut(&client_addr.ip())
-            .ok_or(Error::new(ErrorKind::InvalidUdpPacketReceived))?;
-        let header = Header::read_from(&mut reader).await?;
-        remote_addr = session.resolve_addr(&header.addr).await?;
-        session.insert_client_addr(remote_addr, client_addr);
-        remote_socket = match remote_addr {
-            SocketAddr::V4(_) => session.remote_socket_v4(),
-            SocketAddr::V6(_) => session.remote_socket_v6(),
-        };
+impl Drop for UdpListener {
+    fn drop(&mut self) {
+        self.abort_handle.abort()
     }
-    let mut data = Vec::new();
-    reader.read_to_end(&mut data).await?;
-    remote_socket.send_to(data.as_slice(), &remote_addr).await?;
-    Ok(())
-}
-
-pub async fn handle_remote(
-    data: &[u8],
-    remote_addr: SocketAddr,
-    client_ip: IpAddr,
-    manager: Arc<Mutex<SessionManager>>,
-) -> Result<(), Error> {
-    let client_socket;
-    let client_addr;
-    {
-        let manager = manager.lock().await;
-        client_socket = manager.client_socket();
-        let session = manager
-            .get_session(&client_ip)
-            .ok_or(Error::new(ErrorKind::InvalidUdpPacketReceived))?;
-        client_addr = *session
-            .get_client_addr(&remote_addr)
-            .ok_or(Error::new(ErrorKind::InvalidUdpPacketReceived))?;
-    }
-    let mut writer = BufWriter::new(Vec::new());
-    Header::new(Address::SocketAddress(remote_addr))
-        .write_to(&mut writer)
-        .await?;
-    writer.write_all(data).await?;
-    writer.flush().await?;
-    client_socket
-        .send_to(writer.get_ref(), &client_addr)
-        .await?;
-    Ok(())
 }

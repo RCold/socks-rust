@@ -1,14 +1,8 @@
 use crate::socks::error::{Error, ErrorKind};
 use crate::socks::socks5::address::Address;
+use crate::socks::socks5::command::Command;
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-
-#[repr(u8)]
-pub enum Command {
-    Connect = 0x01u8,
-    Bind = 0x02u8,
-    UdpAssociate = 0x03u8,
-}
 
 #[repr(u8)]
 pub enum ReplyCode {
@@ -16,22 +10,6 @@ pub enum ReplyCode {
     GeneralFailure = 0x01u8,
     CommandNotSupported = 0x07u8,
     AddrTypeNotSupported = 0x08u8,
-}
-
-impl TryInto<Command> for u8 {
-    type Error = Error;
-
-    fn try_into(self) -> Result<Command, Error> {
-        if self == Command::Connect as Self {
-            Ok(Command::Connect)
-        } else if self == Command::Bind as Self {
-            Ok(Command::Bind)
-        } else if self == Command::UdpAssociate as Self {
-            Ok(Command::UdpAssociate)
-        } else {
-            Err(Error::new(ErrorKind::CommandNotSupported))
-        }
-    }
 }
 
 pub struct Reply {
@@ -47,10 +25,7 @@ impl Reply {
         }
     }
 
-    pub async fn write_to<W>(&self, writer: &mut W) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
+    pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> io::Result<()> {
         writer.write_all(&[5u8, self.rep, 0u8]).await?;
         self.bind_addr.write_to(writer).await?;
         writer.flush().await
@@ -77,7 +52,7 @@ impl Request {
                 Reply::new(ReplyCode::CommandNotSupported as u8, None)
                     .write_to(stream)
                     .await
-                    .unwrap_or(());
+                    .unwrap_or_default();
                 return Err(err);
             }
         };
@@ -88,7 +63,7 @@ impl Request {
                 Reply::new(ReplyCode::AddrTypeNotSupported as u8, None)
                     .write_to(stream)
                     .await
-                    .unwrap_or(());
+                    .unwrap_or_default();
                 return Err(err);
             }
         };
