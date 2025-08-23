@@ -15,21 +15,21 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufStream, BufWriter};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::{io, select};
 
-async fn handle_connect(stream: &mut BufStream<TcpStream>, remote_addr: &str) -> io::Result<()> {
-    match TcpStream::connect(remote_addr).await {
-        Ok(remote) => {
+async fn handle_connect(mut stream: BufStream<TcpStream>, remote_addr: String) -> io::Result<()> {
+    match TcpStream::connect(&remote_addr).await {
+        Ok(mut remote) => {
+            remote.set_nodelay(true).unwrap_or_default();
             debug!("tcp://{remote_addr} connected");
-            Reply::new(ReplyCode::Succeeded as u8, None)
-                .write_to(stream)
+            Reply::new(ReplyCode::Succeeded, None)
+                .write_to(&mut stream)
                 .await?;
-            let mut remote = BufStream::new(remote);
-            io::copy_bidirectional(stream, &mut remote).await?;
+            io::copy_bidirectional(&mut stream, &mut remote).await?;
             debug!("tcp://{remote_addr} disconnected");
             Ok(())
         }
         Err(err) => {
-            Reply::new(ReplyCode::GeneralFailure as u8, None)
-                .write_to(stream)
+            Reply::new(ReplyCode::GeneralFailure, None)
+                .write_to(&mut stream)
                 .await
                 .unwrap_or_default();
             Err(err)
@@ -72,9 +72,7 @@ async fn handle_udp(mut session: UdpSession) -> Result<(), Error> {
                         reader.read_to_end(&mut data).await?;
                         remote_socket.send_to(data.as_slice(), &remote_addr).await?;
                     }
-                    None => {
-                        break;
-                    }
+                    None => break,
                 }
             }
             Ok((len, remote_addr)) = remote_socket_v4.recv_from(&mut buf_v4) => {
@@ -89,29 +87,26 @@ async fn handle_udp(mut session: UdpSession) -> Result<(), Error> {
 }
 
 async fn handle_udp_associate(
-    stream: &mut BufStream<TcpStream>,
+    mut stream: BufStream<TcpStream>,
     client_ip: IpAddr,
 ) -> io::Result<()> {
     let mut bind = stream.get_ref().local_addr()?;
     bind.set_port(0);
-    let mut udp_listener;
-    match UdpListener::bind(bind).await {
-        Ok(v) => {
-            udp_listener = v;
-        }
+    let mut udp_listener = match UdpListener::bind(&bind).await {
+        Ok(v) => v,
         Err(err) => {
-            Reply::new(ReplyCode::GeneralFailure as u8, None)
-                .write_to(stream)
+            Reply::new(ReplyCode::GeneralFailure, None)
+                .write_to(&mut stream)
                 .await
                 .unwrap_or_default();
             return Err(err);
         }
-    }
+    };
     Reply::new(
-        ReplyCode::Succeeded as u8,
+        ReplyCode::Succeeded,
         Some(Address::SocketAddress(udp_listener.local_addr())),
     )
-    .write_to(stream)
+    .write_to(&mut stream)
     .await?;
     let mut buf = [0u8; 65536];
     loop {
@@ -152,11 +147,11 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
             info!(
                 "socks5 connect request from client {client_addr} to tcp://{remote_addr} accepted"
             );
-            handle_connect(&mut stream, &remote_addr).await?;
+            handle_connect(stream, remote_addr).await?;
         }
         Command::Bind => {
             info!("socks5 bind request from client {client_addr} rejected: not implemented");
-            Reply::new(ReplyCode::CommandNotSupported as u8, None)
+            Reply::new(ReplyCode::CommandNotSupported, None)
                 .write_to(&mut stream)
                 .await?;
         }
@@ -164,7 +159,7 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
             info!(
                 "socks5 udp associate request from client {client_addr} to udp://{remote_addr} accepted"
             );
-            handle_udp_associate(&mut stream, client_addr.ip()).await?;
+            handle_udp_associate(stream, client_addr.ip()).await?;
         }
     }
     Ok(())

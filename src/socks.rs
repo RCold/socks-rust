@@ -2,7 +2,7 @@ mod error;
 mod socks4;
 mod socks5;
 
-use crate::socks::error::{Error, ErrorKind};
+use crate::socks::error::Error;
 use log::{debug, error};
 use std::net::SocketAddr;
 use tokio::io::AsyncReadExt;
@@ -18,7 +18,7 @@ async fn handle_socks_tcp(mut stream: TcpStream, client_addr: SocketAddr) -> Res
             debug!("handle socks5 request from client {client_addr}");
             socks5::handle_tcp(stream, client_addr).await
         }
-        _ => Err(Error::new(ErrorKind::VersionMismatch)),
+        _ => Err(Error::VersionMismatch),
     }
 }
 
@@ -26,6 +26,7 @@ pub async fn start_socks_server(tcp_listener: TcpListener) {
     loop {
         match tcp_listener.accept().await {
             Ok((stream, client_addr)) => {
+                stream.set_nodelay(true).unwrap_or_default();
                 tokio::spawn(async move {
                     debug!("client {client_addr} connected");
                     if let Err(err) = handle_socks_tcp(stream, client_addr).await {

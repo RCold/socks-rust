@@ -1,4 +1,4 @@
-use crate::socks::error::{Error, ErrorKind};
+use crate::socks::error::Error;
 use crate::socks::socks5::address::Address;
 use log::debug;
 use std::collections::hash_map::Entry;
@@ -13,13 +13,13 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::AbortHandle;
 
 pub struct UdpHeader {
-    _frag: u8,
+    frag: u8,
     addr: Address,
 }
 
 impl UdpHeader {
     pub fn new(addr: Address) -> Self {
-        Self { _frag: 0, addr }
+        Self { frag: 0, addr }
     }
 
     pub fn addr(&self) -> &Address {
@@ -30,14 +30,14 @@ impl UdpHeader {
         let _rsv = reader.read_u16().await?;
         let frag = reader.read_u8().await?;
         if frag != 0u8 {
-            return Err(Error::new(ErrorKind::FragmentationNotSupported));
+            return Err(Error::FragmentationNotSupported);
         }
         let addr = Address::read_from(reader).await?;
-        Ok(Self { _frag: frag, addr })
+        Ok(Self { frag, addr })
     }
 
     pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> io::Result<()> {
-        writer.write_all(&[0u8, 0u8, self._frag]).await?;
+        writer.write_all(&[0u8, 0u8, self.frag]).await?;
         self.addr.write_to(writer).await
     }
 
@@ -71,7 +71,7 @@ impl UdpSession {
         self.tx
             .send((data, self.peer_addr))
             .await
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "failed to send udp packet"))
+            .map_err(|_| io::ErrorKind::BrokenPipe.into())
     }
 
     pub async fn recv(&mut self) -> Option<Vec<u8>> {

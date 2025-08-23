@@ -1,4 +1,4 @@
-use crate::socks::error::{Error, ErrorKind};
+use crate::socks::error::Error;
 use log::{debug, info};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
@@ -12,12 +12,11 @@ enum Reply {
     RequestRejectedOrFailed = 91u8,
 }
 
-async fn send_response(stream: &mut BufStream<TcpStream>, rep: Reply) -> Result<(), Error> {
+async fn send_response(stream: &mut BufStream<TcpStream>, rep: Reply) -> io::Result<()> {
     stream
         .write_all(&[0u8, rep as u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8])
         .await?;
-    stream.flush().await?;
-    Ok(())
+    stream.flush().await
 }
 
 pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<(), Error> {
@@ -27,7 +26,7 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
         send_response(&mut stream, Reply::RequestRejectedOrFailed)
             .await
             .unwrap_or_default();
-        return Err(Error::new(ErrorKind::CommandNotSupported));
+        return Err(Error::CommandNotSupported);
     }
     let port = stream.read_u16().await?;
     let mut ip = [0u8; 4];
@@ -37,12 +36,12 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
     let mut _user_id = Vec::new();
     stream.read_until(0u8, &mut _user_id).await?;
 
-    let mut stream = stream.into_inner().take(255);
     let addr = if ip[..3] == [0u8, 0u8, 0u8] && ip[3] != 0u8 {
         let mut domain = Vec::new();
+        stream.set_limit(255);
         stream.read_until(0u8, &mut domain).await?;
         domain.pop();
-        String::from_utf8(domain).map_err(|_| Error::new(ErrorKind::InvalidDomainName))?
+        String::from_utf8(domain).map_err(|_| Error::InvalidDomainName)?
     } else {
         Ipv4Addr::from(ip).to_string()
     };
@@ -56,6 +55,7 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
     info!("socks4 request from client {client_addr} to tcp://{remote_addr} accepted");
     match TcpStream::connect(&remote_addr).await {
         Ok(mut remote) => {
+            remote.set_nodelay(true).unwrap_or_default();
             debug!("tcp://{remote_addr} connected");
             send_response(&mut stream, Reply::RequestGranted).await?;
             io::copy_bidirectional(&mut stream, &mut remote).await?;

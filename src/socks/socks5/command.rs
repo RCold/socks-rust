@@ -1,4 +1,4 @@
-use crate::socks::error::{Error, ErrorKind};
+use crate::socks::error::Error;
 
 #[repr(u8)]
 pub enum Command {
@@ -10,7 +10,7 @@ pub enum Command {
 impl TryInto<Command> for u8 {
     type Error = Error;
 
-    fn try_into(self) -> Result<Command, Error> {
+    fn try_into(self) -> Result<Command, Self::Error> {
         if self == Command::Connect as Self {
             Ok(Command::Connect)
         } else if self == Command::Bind as Self {
@@ -18,7 +18,7 @@ impl TryInto<Command> for u8 {
         } else if self == Command::UdpAssociate as Self {
             Ok(Command::UdpAssociate)
         } else {
-            Err(Error::new(ErrorKind::CommandNotSupported))
+            Err(Error::CommandNotSupported)
         }
     }
 }
