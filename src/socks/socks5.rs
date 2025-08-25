@@ -116,7 +116,7 @@ async fn handle_udp_associate(
                 match v {
                     Ok((session, client_addr)) => {
                         if client_addr.ip() != client_ip {
-                            error!("invalid udp packet received from {client_addr}");
+                            info!("udp packets from client {client_addr} dropped: client ip address not allowed");
                             continue;
                         }
                         tokio::spawn(async move {
@@ -128,7 +128,7 @@ async fn handle_udp_associate(
                         });
                     }
                     Err(err) => {
-                        error!("failed to receive udp packet: {err}");
+                        error!("failed to receive udp packet from a client: {err}");
                     }
                 }
             }

@@ -52,7 +52,7 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
     };
 
     let mut stream = stream.into_inner();
-    info!("socks4 request from client {client_addr} to tcp://{remote_addr} accepted");
+    info!("socks4 connect request from client {client_addr} to tcp://{remote_addr} accepted");
     match TcpStream::connect(&remote_addr).await {
         Ok(mut remote) => {
             remote.set_nodelay(true).unwrap_or_default();

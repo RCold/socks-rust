@@ -36,7 +36,7 @@ pub async fn start_socks_server(tcp_listener: TcpListener) {
                 });
             }
             Err(err) => {
-                error!("failed to accept tcp connection from client: {err}");
+                error!("failed to accept tcp connection from a client: {err}");
             }
         }
     }
