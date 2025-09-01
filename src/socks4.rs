@@ -1,4 +1,4 @@
-use crate::socks::error::Error;
+use crate::error::Error;
 use log::{debug, info};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
@@ -7,12 +7,18 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufStream};
 use tokio::net::TcpStream;
 
 #[repr(u8)]
-enum Reply {
+enum Command {
+    Connect = 1u8,
+    Bind = 2u8,
+}
+
+#[repr(u8)]
+enum ReplyCode {
     RequestGranted = 90u8,
     RequestRejectedOrFailed = 91u8,
 }
 
-async fn send_response(stream: &mut BufStream<TcpStream>, rep: Reply) -> io::Result<()> {
+async fn send_response(stream: &mut BufStream<TcpStream>, rep: ReplyCode) -> io::Result<()> {
     stream
         .write_all(&[0u8, rep as u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8])
         .await?;
@@ -22,8 +28,12 @@ async fn send_response(stream: &mut BufStream<TcpStream>, rep: Reply) -> io::Res
 pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<(), Error> {
     let mut stream = BufStream::new(stream);
     let cmd = stream.read_u8().await?;
-    if cmd != 1u8 {
-        send_response(&mut stream, Reply::RequestRejectedOrFailed)
+    if cmd == Command::Bind as u8 {
+        info!("socks4 bind request from client {client_addr} rejected: not implemented");
+        send_response(&mut stream, ReplyCode::RequestRejectedOrFailed).await?;
+        return Ok(());
+    } else if cmd != Command::Connect as u8 {
+        send_response(&mut stream, ReplyCode::RequestRejectedOrFailed)
             .await
             .unwrap_or_default();
         return Err(Error::CommandNotSupported);
@@ -57,13 +67,13 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
         Ok(mut remote) => {
             remote.set_nodelay(true).unwrap_or_default();
             debug!("tcp://{remote_addr} connected");
-            send_response(&mut stream, Reply::RequestGranted).await?;
+            send_response(&mut stream, ReplyCode::RequestGranted).await?;
             io::copy_bidirectional(&mut stream, &mut remote).await?;
             debug!("tcp://{remote_addr} disconnected");
             Ok(())
         }
         Err(err) => {
-            send_response(&mut stream, Reply::RequestRejectedOrFailed)
+            send_response(&mut stream, ReplyCode::RequestRejectedOrFailed)
                 .await
                 .unwrap_or_default();
             Err(err.into())

@@ -1,10 +1,10 @@
-use crate::socks::error::Error;
-use crate::socks::socks5::address::Address;
+use crate::error::Error;
+use crate::socks5::Address;
 use log::debug;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::io;
 use std::net::SocketAddr;
+use tokio::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net;
 use tokio::net::{ToSocketAddrs, UdpSocket};

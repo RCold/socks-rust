@@ -1,4 +1,7 @@
+mod error;
 mod socks;
+mod socks4;
+mod socks5;
 
 use clap::{arg, Parser};
 use std::net::Ipv6Addr;
@@ -8,7 +11,7 @@ use tokio::net::TcpListener;
 
 #[derive(Parser)]
 #[command(version)]
-pub struct Args {
+struct Args {
     #[arg(
         default_value = "0.0.0.0",
         help = "Specify bind address",

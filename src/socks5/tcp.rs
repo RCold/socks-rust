@@ -1,7 +1,7 @@
-use crate::socks::error::Error;
-use crate::socks::socks5::address::Address;
-use crate::socks::socks5::command::Command;
-use std::io;
+use crate::error::Error;
+use crate::socks5::Address;
+use crate::socks5::Command;
+use tokio::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 #[derive(Clone, Copy)]
@@ -10,7 +10,7 @@ pub enum ReplyCode {
     Succeeded = 0x00u8,
     GeneralFailure = 0x01u8,
     CommandNotSupported = 0x07u8,
-    AddrTypeNotSupported = 0x08u8,
+    AddressTypeNotSupported = 0x08u8,
 }
 
 pub struct Reply {
@@ -34,8 +34,8 @@ impl Reply {
 }
 
 pub struct Request {
-    pub cmd: Command,
-    pub addr: Address,
+    cmd: Command,
+    addr: Address,
 }
 
 impl Request {
@@ -49,25 +49,39 @@ impl Request {
         }
         let cmd = match stream.read_u8().await?.try_into() {
             Ok(v) => v,
-            Err(err) => {
+            Err(Error::CommandNotSupported) => {
                 Reply::new(ReplyCode::CommandNotSupported, None)
                     .write_to(stream)
                     .await
                     .unwrap_or_default();
+                return Err(Error::CommandNotSupported);
+            }
+            Err(err) => {
                 return Err(err);
             }
         };
         let _rsv = stream.read_u8().await?;
         let addr = match Address::read_from(stream).await {
             Ok(v) => v,
-            Err(err) => {
-                Reply::new(ReplyCode::AddrTypeNotSupported, None)
+            Err(Error::AddressTypeNotSupported) => {
+                Reply::new(ReplyCode::AddressTypeNotSupported, None)
                     .write_to(stream)
                     .await
                     .unwrap_or_default();
+                return Err(Error::AddressTypeNotSupported);
+            }
+            Err(err) => {
                 return Err(err);
             }
         };
         Ok(Self { cmd, addr })
+    }
+
+    pub fn cmd(&self) -> &Command {
+        &self.cmd
+    }
+
+    pub fn addr(&self) -> &Address {
+        &self.addr
     }
 }

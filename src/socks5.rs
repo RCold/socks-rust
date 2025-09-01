@@ -1,19 +1,154 @@
-mod address;
 mod auth;
-mod command;
 mod tcp;
 mod udp;
 
-use crate::socks::error::Error;
-use crate::socks::socks5::address::Address;
-use crate::socks::socks5::command::Command;
-use crate::socks::socks5::tcp::{Reply, ReplyCode, Request};
-use crate::socks::socks5::udp::{UdpHeader, UdpListener, UdpSession};
+use crate::error::Error;
+use crate::socks5::tcp::{Reply, ReplyCode, Request};
+use crate::socks5::udp::{UdpHeader, UdpListener, UdpSession};
 use log::{debug, error, info};
-use std::net::{IpAddr, SocketAddr};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufStream, BufWriter};
+use std::fmt;
+use std::fmt::Display;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::str::FromStr;
+use tokio::io::{
+    AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufStream, BufWriter,
+};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::{io, select};
+
+#[repr(u8)]
+enum Command {
+    Connect = 0x01u8,
+    Bind = 0x02u8,
+    UdpAssociate = 0x03u8,
+}
+
+impl TryInto<Command> for u8 {
+    type Error = Error;
+
+    fn try_into(self) -> Result<Command, Self::Error> {
+        if self == Command::Connect as Self {
+            Ok(Command::Connect)
+        } else if self == Command::Bind as Self {
+            Ok(Command::Bind)
+        } else if self == Command::UdpAssociate as Self {
+            Ok(Command::UdpAssociate)
+        } else {
+            Err(Error::CommandNotSupported)
+        }
+    }
+}
+
+#[repr(u8)]
+enum AddrType {
+    IPv4 = 0x01u8,
+    DomainName = 0x03u8,
+    IPv6 = 0x04u8,
+}
+
+impl TryInto<AddrType> for u8 {
+    type Error = Error;
+
+    fn try_into(self) -> Result<AddrType, Self::Error> {
+        if self == AddrType::IPv4 as Self {
+            Ok(AddrType::IPv4)
+        } else if self == AddrType::DomainName as Self {
+            Ok(AddrType::DomainName)
+        } else if self == AddrType::IPv6 as Self {
+            Ok(AddrType::IPv6)
+        } else {
+            Err(Error::AddressTypeNotSupported)
+        }
+    }
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+enum Address {
+    SocketAddress(SocketAddr),
+    DomainAddress(String, u16),
+}
+
+impl Address {
+    pub async fn read_from<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Self, Error> {
+        let addr_type = reader.read_u8().await?.try_into()?;
+        match addr_type {
+            AddrType::IPv4 => {
+                let mut ip = [0u8; 4];
+                reader.read_exact(&mut ip).await?;
+                let port = reader.read_u16().await?;
+                Ok(Self::SocketAddress(SocketAddr::new(ip.into(), port)))
+            }
+            AddrType::DomainName => {
+                let len = reader.read_u8().await? as usize;
+                if len < 1 {
+                    return Err(Error::InvalidDomainName);
+                }
+                let mut domain = vec![0u8; len];
+                reader.read_exact(&mut domain).await?;
+                let port = reader.read_u16().await?;
+                let domain = String::from_utf8(domain).map_err(|_| Error::InvalidDomainName)?;
+                Ok(Self::DomainAddress(domain, port))
+            }
+            AddrType::IPv6 => {
+                let mut ip = [0u8; 16];
+                reader.read_exact(&mut ip).await?;
+                let port = reader.read_u16().await?;
+                Ok(Self::SocketAddress(SocketAddr::new(ip.into(), port)))
+            }
+        }
+    }
+
+    pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> io::Result<()> {
+        match self {
+            Self::SocketAddress(SocketAddr::V4(addr)) => {
+                writer.write_u8(AddrType::IPv4 as u8).await?;
+                writer.write_all(&addr.ip().octets()).await?;
+                writer.write_u16(addr.port()).await?;
+            }
+            Self::DomainAddress(addr, port) => {
+                writer.write_u8(AddrType::DomainName as u8).await?;
+                writer.write_u8(addr.len() as u8).await?;
+                writer.write_all(addr.as_bytes()).await?;
+                writer.write_u16(*port).await?;
+            }
+            Self::SocketAddress(SocketAddr::V6(addr)) => {
+                writer.write_u8(AddrType::IPv6 as u8).await?;
+                writer.write_all(&addr.ip().octets()).await?;
+                writer.write_u16(addr.port()).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn _serialized_len(&self) -> usize {
+        1 + match self {
+            Self::SocketAddress(SocketAddr::V4(_)) => 4,
+            Self::SocketAddress(SocketAddr::V6(_)) => 16,
+            Self::DomainAddress(addr, _) => 1 + addr.len(),
+        } + 2
+    }
+}
+
+impl Display for Address {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SocketAddress(addr) => addr.fmt(f),
+            Self::DomainAddress(domain, port) => {
+                if let Ok(addr) = Ipv6Addr::from_str(domain) {
+                    write!(f, "[{addr}]:{port}")
+                } else {
+                    write!(f, "{domain}:{port}")
+                }
+            }
+        }
+    }
+}
+
+impl Default for Address {
+    fn default() -> Self {
+        Self::SocketAddress(SocketAddr::new([0u8, 0u8, 0u8, 0u8].into(), 0u16))
+    }
+}
 
 async fn handle_connect(mut stream: BufStream<TcpStream>, remote_addr: String) -> io::Result<()> {
     match TcpStream::connect(&remote_addr).await {
@@ -91,7 +226,7 @@ async fn handle_udp_associate(
     client_ip: IpAddr,
 ) -> io::Result<()> {
     let mut bind = stream.get_ref().local_addr()?;
-    bind.set_port(0);
+    bind.set_port(0u16);
     let mut udp_listener = match UdpListener::bind(&bind).await {
         Ok(v) => v,
         Err(err) => {
@@ -141,8 +276,8 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
     let mut stream = BufStream::new(stream);
     auth::authenticate(&mut stream).await?;
     let request = Request::read_from(&mut stream).await?;
-    let remote_addr = request.addr.to_string();
-    match request.cmd {
+    let remote_addr = request.addr().to_string();
+    match request.cmd() {
         Command::Connect => {
             info!(
                 "socks5 connect request from client {client_addr} to tcp://{remote_addr} accepted"

@@ -1,8 +1,5 @@
-mod error;
-mod socks4;
-mod socks5;
-
-use crate::socks::error::Error;
+use crate::error::Error;
+use crate::{socks4, socks5};
 use log::{debug, error};
 use std::net::SocketAddr;
 use tokio::io::AsyncReadExt;

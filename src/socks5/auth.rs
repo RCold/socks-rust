@@ -1,8 +1,7 @@
-use crate::socks::error::Error;
-use std::io;
+use crate::error::Error;
+use tokio::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-#[derive(Clone, Copy)]
 #[repr(u8)]
 enum Method {
     NoAuth = 0x00u8,
@@ -10,19 +9,9 @@ enum Method {
     NoAcceptable = 0xFFu8,
 }
 
-struct Reply {
-    method: Method,
-}
-
-impl Reply {
-    fn new(method: Method) -> Self {
-        Self { method }
-    }
-
-    async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> io::Result<()> {
-        writer.write_all(&[5u8, self.method as u8]).await?;
-        writer.flush().await
-    }
+async fn send_response<W: AsyncWrite + Unpin>(writer: &mut W, method: Method) -> io::Result<()> {
+    writer.write_all(&[5u8, method as u8]).await?;
+    writer.flush().await
 }
 
 pub async fn authenticate<RW>(stream: &mut RW) -> Result<(), Error>
@@ -33,11 +22,10 @@ where
     let mut methods = vec![0u8; len];
     stream.read_exact(&mut methods).await?;
     if methods.contains(&(Method::NoAuth as u8)) {
-        Reply::new(Method::NoAuth).write_to(stream).await?;
+        send_response(stream, Method::NoAuth).await?;
         Ok(())
     } else {
-        Reply::new(Method::NoAcceptable)
-            .write_to(stream)
+        send_response(stream, Method::NoAcceptable)
             .await
             .unwrap_or_default();
         Err(Error::NoAcceptableAuthMethods)
