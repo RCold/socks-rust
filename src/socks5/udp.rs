@@ -1,8 +1,8 @@
 use crate::error::Error;
 use crate::socks5::Address;
 use log::debug;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::net::SocketAddr;
 use tokio::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -36,7 +36,7 @@ impl UdpHeader {
         Ok(Self { frag, addr })
     }
 
-    pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> io::Result<()> {
+    pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> Result<(), Error> {
         writer.write_all(&[0u8, 0u8, self.frag]).await?;
         self.addr.write_to(writer).await
     }

@@ -1,7 +1,6 @@
 use crate::error::Error;
 use crate::socks5::Address;
 use crate::socks5::Command;
-use tokio::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 #[derive(Clone, Copy)]
@@ -26,10 +25,11 @@ impl Reply {
         }
     }
 
-    pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> io::Result<()> {
+    pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> Result<(), Error> {
         writer.write_all(&[5u8, self.rep as u8, 0u8]).await?;
         self.bind.write_to(writer).await?;
-        writer.flush().await
+        writer.flush().await?;
+        Ok(())
     }
 }
 
@@ -49,12 +49,12 @@ impl Request {
         }
         let cmd = match stream.read_u8().await?.try_into() {
             Ok(v) => v,
-            Err(Error::CommandNotSupported) => {
+            Err(Error::InvalidCommand) => {
                 Reply::new(ReplyCode::CommandNotSupported, None)
                     .write_to(stream)
                     .await
                     .unwrap_or_default();
-                return Err(Error::CommandNotSupported);
+                return Err(Error::InvalidCommand);
             }
             Err(err) => {
                 return Err(err);
@@ -63,12 +63,12 @@ impl Request {
         let _rsv = stream.read_u8().await?;
         let addr = match Address::read_from(stream).await {
             Ok(v) => v,
-            Err(Error::AddressTypeNotSupported) => {
+            Err(Error::InvalidAddressType) => {
                 Reply::new(ReplyCode::AddressTypeNotSupported, None)
                     .write_to(stream)
                     .await
                     .unwrap_or_default();
-                return Err(Error::AddressTypeNotSupported);
+                return Err(Error::InvalidAddressType);
             }
             Err(err) => {
                 return Err(err);

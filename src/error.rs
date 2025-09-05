@@ -4,12 +4,10 @@ use std::{error, fmt, io};
 pub enum Error {
     Io(io::Error),
     VersionMismatch,
-    NoAcceptableAuthMethods,
-    AddressTypeNotSupported,
-    CommandNotSupported,
+    InvalidAddressType,
+    InvalidCommand,
     InvalidDomainName,
     FragmentationNotSupported,
-    InvalidUdpPacketReceived,
 }
 
 impl fmt::Display for Error {
@@ -18,12 +16,10 @@ impl fmt::Display for Error {
         match self {
             Io(err) => err.fmt(f),
             VersionMismatch => f.write_str("version mismatch"),
-            NoAcceptableAuthMethods => f.write_str("no acceptable authentication methods"),
-            AddressTypeNotSupported => f.write_str("address type not supported"),
-            CommandNotSupported => f.write_str("command not supported"),
+            InvalidAddressType => f.write_str("invalid address type"),
+            InvalidCommand => f.write_str("invalid command"),
             InvalidDomainName => f.write_str("invalid domain name"),
             FragmentationNotSupported => f.write_str("fragmentation not supported"),
-            InvalidUdpPacketReceived => f.write_str("invalid udp packet received"),
         }
     }
 }

@@ -34,7 +34,7 @@ impl TryInto<Command> for u8 {
         } else if self == Command::UdpAssociate as Self {
             Ok(Command::UdpAssociate)
         } else {
-            Err(Error::CommandNotSupported)
+            Err(Error::InvalidCommand)
         }
     }
 }
@@ -57,7 +57,7 @@ impl TryInto<AddrType> for u8 {
         } else if self == AddrType::IPv6 as Self {
             Ok(AddrType::IPv6)
         } else {
-            Err(Error::AddressTypeNotSupported)
+            Err(Error::InvalidAddressType)
         }
     }
 }
@@ -85,8 +85,8 @@ impl Address {
                 }
                 let mut domain = vec![0u8; len];
                 reader.read_exact(&mut domain).await?;
-                let port = reader.read_u16().await?;
                 let domain = String::from_utf8(domain).map_err(|_| Error::InvalidDomainName)?;
+                let port = reader.read_u16().await?;
                 Ok(Self::DomainAddress(domain, port))
             }
             AddrType::IPv6 => {
@@ -98,7 +98,7 @@ impl Address {
         }
     }
 
-    pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> io::Result<()> {
+    pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> Result<(), Error> {
         match self {
             Self::SocketAddress(SocketAddr::V4(addr)) => {
                 writer.write_u8(AddrType::IPv4 as u8).await?;
@@ -107,6 +107,9 @@ impl Address {
             }
             Self::DomainAddress(addr, port) => {
                 writer.write_u8(AddrType::DomainName as u8).await?;
+                if addr.len() < 1 || addr.len() > 255 {
+                    return Err(Error::InvalidDomainName);
+                }
                 writer.write_u8(addr.len() as u8).await?;
                 writer.write_all(addr.as_bytes()).await?;
                 writer.write_u16(*port).await?;
@@ -150,7 +153,10 @@ impl Default for Address {
     }
 }
 
-async fn handle_connect(mut stream: BufStream<TcpStream>, remote_addr: String) -> io::Result<()> {
+async fn handle_connect(
+    mut stream: BufStream<TcpStream>,
+    remote_addr: String,
+) -> Result<(), Error> {
     match TcpStream::connect(&remote_addr).await {
         Ok(mut remote) => {
             remote.set_nodelay(true).unwrap_or_default();
@@ -167,7 +173,7 @@ async fn handle_connect(mut stream: BufStream<TcpStream>, remote_addr: String) -
                 .write_to(&mut stream)
                 .await
                 .unwrap_or_default();
-            Err(err)
+            Err(err.into())
         }
     }
 }
@@ -176,14 +182,15 @@ async fn handle_remote_udp(
     session: &UdpSession,
     data: &[u8],
     remote_addr: SocketAddr,
-) -> io::Result<()> {
+) -> Result<(), Error> {
     let mut writer = BufWriter::new(Vec::new());
     UdpHeader::new(Address::SocketAddress(remote_addr))
         .write_to(&mut writer)
         .await?;
     writer.write_all(data).await?;
     writer.flush().await?;
-    session.send(writer.into_inner()).await
+    session.send(writer.into_inner()).await?;
+    Ok(())
 }
 
 async fn handle_udp(mut session: UdpSession) -> Result<(), Error> {
@@ -224,7 +231,7 @@ async fn handle_udp(mut session: UdpSession) -> Result<(), Error> {
 async fn handle_udp_associate(
     mut stream: BufStream<TcpStream>,
     client_ip: IpAddr,
-) -> io::Result<()> {
+) -> Result<(), Error> {
     let mut bind = stream.get_ref().local_addr()?;
     bind.set_port(0u16);
     let mut udp_listener = match UdpListener::bind(&bind).await {
@@ -234,7 +241,7 @@ async fn handle_udp_associate(
                 .write_to(&mut stream)
                 .await
                 .unwrap_or_default();
-            return Err(err);
+            return Err(err.into());
         }
     };
     Reply::new(
@@ -274,7 +281,10 @@ async fn handle_udp_associate(
 
 pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<(), Error> {
     let mut stream = BufStream::new(stream);
-    auth::authenticate(&mut stream).await?;
+    if !auth::authenticate(&mut stream).await? {
+        info!("socks5 request from {client_addr} rejected: authentication failed");
+        return Ok(());
+    }
     let request = Request::read_from(&mut stream).await?;
     let remote_addr = request.addr().to_string();
     match request.cmd() {

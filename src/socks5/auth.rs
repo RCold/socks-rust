@@ -1,4 +1,3 @@
-use crate::error::Error;
 use tokio::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -14,7 +13,7 @@ async fn send_response<W: AsyncWrite + Unpin>(writer: &mut W, method: Method) ->
     writer.flush().await
 }
 
-pub async fn authenticate<RW>(stream: &mut RW) -> Result<(), Error>
+pub async fn authenticate<RW>(stream: &mut RW) -> io::Result<bool>
 where
     RW: AsyncRead + AsyncWrite + Unpin,
 {
@@ -23,11 +22,9 @@ where
     stream.read_exact(&mut methods).await?;
     if methods.contains(&(Method::NoAuth as u8)) {
         send_response(stream, Method::NoAuth).await?;
-        Ok(())
+        Ok(true)
     } else {
-        send_response(stream, Method::NoAcceptable)
-            .await
-            .unwrap_or_default();
-        Err(Error::NoAcceptableAuthMethods)
+        send_response(stream, Method::NoAcceptable).await?;
+        Ok(false)
     }
 }

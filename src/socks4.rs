@@ -36,7 +36,7 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
         send_response(&mut stream, ReplyCode::RequestRejectedOrFailed)
             .await
             .unwrap_or_default();
-        return Err(Error::CommandNotSupported);
+        return Err(Error::InvalidCommand);
     }
     let port = stream.read_u16().await?;
     let mut ip = [0u8; 4];
@@ -51,7 +51,15 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
         stream.set_limit(255);
         stream.read_until(0u8, &mut domain).await?;
         domain.pop();
-        String::from_utf8(domain).map_err(|_| Error::InvalidDomainName)?
+        String::from_utf8(domain)
+            .map_err(|_| Error::InvalidDomainName)
+            .and_then(|v| {
+                if v.len() > 0 {
+                    Ok(v)
+                } else {
+                    Err(Error::InvalidDomainName)
+                }
+            })?
     } else {
         Ipv4Addr::from(ip).to_string()
     };

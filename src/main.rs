@@ -3,7 +3,7 @@ mod socks;
 mod socks4;
 mod socks5;
 
-use clap::{arg, Parser};
+use clap::{Parser, arg};
 use std::net::Ipv6Addr;
 use std::process;
 use std::str::FromStr;
@@ -13,15 +13,19 @@ use tokio::net::TcpListener;
 #[command(version)]
 struct Args {
     #[arg(
-        default_value = "0.0.0.0",
         help = "Specify bind address",
         long,
         short,
-        value_name = "ADDRESS"
+        default_value = "0.0.0.0",
+        value_name = "ADDRESS",
     )]
     pub bind: String,
 
-    #[arg(default_value_t = 1080, help = "Specify bind port")]
+    #[arg(
+        value_parser = clap::value_parser!(u16).range(1..),
+        help = "Specify bind port",
+        default_value_t = 1080,
+    )]
     pub port: u16,
 }
 
