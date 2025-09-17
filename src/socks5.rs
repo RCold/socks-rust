@@ -107,7 +107,7 @@ impl Address {
             }
             Self::DomainAddress(addr, port) => {
                 writer.write_u8(AddrType::DomainName as u8).await?;
-                if addr.len() < 1 || addr.len() > 255 {
+                if addr.is_empty() || addr.len() > 255 {
                     return Err(Error::InvalidDomainName);
                 }
                 writer.write_u8(addr.len() as u8).await?;

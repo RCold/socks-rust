@@ -67,7 +67,7 @@ pub async fn handle_tcp(stream: TcpStream, client_addr: SocketAddr) -> Result<()
         stream.set_limit(255);
         stream.read_until(0u8, &mut domain).await?;
         domain.pop();
-        if domain.len() < 1 {
+        if domain.is_empty() {
             return Err(Error::InvalidDomainName);
         }
         String::from_utf8(domain).map_err(|_| Error::InvalidDomainName)?
