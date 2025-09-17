@@ -4,6 +4,7 @@ use std::{error, fmt, io};
 pub enum Error {
     Io(io::Error),
     VersionMismatch,
+    InvalidAuthMethod,
     InvalidAddressType,
     InvalidCommand,
     InvalidDomainName,
@@ -16,6 +17,7 @@ impl fmt::Display for Error {
         match self {
             Io(err) => err.fmt(f),
             VersionMismatch => f.write_str("version mismatch"),
+            InvalidAuthMethod => f.write_str("invalid auth method"),
             InvalidAddressType => f.write_str("invalid address type"),
             InvalidCommand => f.write_str("invalid command"),
             InvalidDomainName => f.write_str("invalid domain name"),

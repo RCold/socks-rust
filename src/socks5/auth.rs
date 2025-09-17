@@ -1,3 +1,4 @@
+use crate::error::Error;
 use tokio::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -13,11 +14,14 @@ async fn send_response<W: AsyncWrite + Unpin>(writer: &mut W, method: Method) ->
     writer.flush().await
 }
 
-pub async fn authenticate<RW>(stream: &mut RW) -> io::Result<bool>
+pub async fn authenticate<RW>(stream: &mut RW) -> Result<bool, Error>
 where
     RW: AsyncRead + AsyncWrite + Unpin,
 {
     let len = stream.read_u8().await? as usize;
+    if len < 1 {
+        return Err(Error::InvalidAuthMethod);
+    }
     let mut methods = vec![0u8; len];
     stream.read_exact(&mut methods).await?;
     if methods.contains(&(Method::NoAuth as u8)) {
