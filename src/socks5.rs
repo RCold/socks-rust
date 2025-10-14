@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2025 Yeuham Wang <rcold@rcold.name>
+
 mod auth;
 mod tcp;
 mod udp;

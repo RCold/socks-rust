@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2025 Yeuham Wang <rcold@rcold.name>
+
 use crate::error::Error;
 use crate::socks5::Address;
 use crate::socks5::Command;
