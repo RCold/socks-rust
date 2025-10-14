@@ -62,10 +62,9 @@ impl TryInto<AddrType> for u8 {
     }
 }
 
-#[derive(Clone, Eq, Hash, PartialEq)]
 enum Address {
-    SocketAddress(SocketAddr),
-    DomainAddress(String, u16),
+    Socket(SocketAddr),
+    Domain(String, u16),
 }
 
 impl Address {
@@ -76,7 +75,7 @@ impl Address {
                 let mut ip = [0u8; 4];
                 reader.read_exact(&mut ip).await?;
                 let port = reader.read_u16().await?;
-                Ok(Self::SocketAddress(SocketAddr::new(ip.into(), port)))
+                Ok(Self::Socket(SocketAddr::new(ip.into(), port)))
             }
             AddrType::DomainName => {
                 let len = reader.read_u8().await? as usize;
@@ -87,25 +86,25 @@ impl Address {
                 reader.read_exact(&mut domain).await?;
                 let domain = String::from_utf8(domain).map_err(|_| Error::InvalidDomainName)?;
                 let port = reader.read_u16().await?;
-                Ok(Self::DomainAddress(domain, port))
+                Ok(Self::Domain(domain, port))
             }
             AddrType::IPv6 => {
                 let mut ip = [0u8; 16];
                 reader.read_exact(&mut ip).await?;
                 let port = reader.read_u16().await?;
-                Ok(Self::SocketAddress(SocketAddr::new(ip.into(), port)))
+                Ok(Self::Socket(SocketAddr::new(ip.into(), port)))
             }
         }
     }
 
     pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> Result<(), Error> {
         match self {
-            Self::SocketAddress(SocketAddr::V4(addr)) => {
+            Self::Socket(SocketAddr::V4(addr)) => {
                 writer.write_u8(AddrType::IPv4 as u8).await?;
                 writer.write_all(&addr.ip().octets()).await?;
                 writer.write_u16(addr.port()).await?;
             }
-            Self::DomainAddress(addr, port) => {
+            Self::Domain(addr, port) => {
                 writer.write_u8(AddrType::DomainName as u8).await?;
                 if addr.is_empty() || addr.len() > 255 {
                     return Err(Error::InvalidDomainName);
@@ -114,7 +113,7 @@ impl Address {
                 writer.write_all(addr.as_bytes()).await?;
                 writer.write_u16(*port).await?;
             }
-            Self::SocketAddress(SocketAddr::V6(addr)) => {
+            Self::Socket(SocketAddr::V6(addr)) => {
                 writer.write_u8(AddrType::IPv6 as u8).await?;
                 writer.write_all(&addr.ip().octets()).await?;
                 writer.write_u16(addr.port()).await?;
@@ -125,9 +124,9 @@ impl Address {
 
     pub fn _serialized_len(&self) -> usize {
         1 + match self {
-            Self::SocketAddress(SocketAddr::V4(_)) => 4,
-            Self::SocketAddress(SocketAddr::V6(_)) => 16,
-            Self::DomainAddress(addr, _) => 1 + addr.len(),
+            Self::Socket(SocketAddr::V4(_)) => 4,
+            Self::Socket(SocketAddr::V6(_)) => 16,
+            Self::Domain(addr, _) => 1 + addr.len(),
         } + 2
     }
 }
@@ -135,8 +134,8 @@ impl Address {
 impl Display for Address {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SocketAddress(addr) => addr.fmt(f),
-            Self::DomainAddress(domain, port) => {
+            Self::Socket(addr) => addr.fmt(f),
+            Self::Domain(domain, port) => {
                 if let Ok(addr) = Ipv6Addr::from_str(domain) {
                     write!(f, "[{addr}]:{port}")
                 } else {
@@ -149,7 +148,7 @@ impl Display for Address {
 
 impl Default for Address {
     fn default() -> Self {
-        Self::SocketAddress(SocketAddr::new([0u8, 0u8, 0u8, 0u8].into(), 0u16))
+        Self::Socket(SocketAddr::new([0u8, 0u8, 0u8, 0u8].into(), 0u16))
     }
 }
 
@@ -184,7 +183,7 @@ async fn handle_remote_udp(
     remote_addr: SocketAddr,
 ) -> Result<(), Error> {
     let mut writer = BufWriter::new(Vec::new());
-    UdpHeader::new(Address::SocketAddress(remote_addr))
+    UdpHeader::new(Address::Socket(remote_addr))
         .write_to(&mut writer)
         .await?;
     writer.write_all(data).await?;
@@ -205,7 +204,13 @@ async fn handle_udp(mut session: UdpSession) -> Result<(), Error> {
                     Some(data) => {
                         let mut reader = BufReader::new(data.as_slice());
                         let header = UdpHeader::read_from(&mut reader).await?;
-                        let remote_addr = session.resolve_addr(header.addr()).await?;
+                        let remote_addr = match header.addr() {
+                            Address::Socket(v) => *v,
+                            Address::Domain(domain, port) => {
+                                let ip = session.resolve_addr(domain).await?;
+                                SocketAddr::new(ip, *port)
+                            }
+                        };
                         let remote_socket = match remote_addr {
                             SocketAddr::V4(_) => &remote_socket_v4,
                             SocketAddr::V6(_) => &remote_socket_v6,
@@ -246,7 +251,7 @@ async fn handle_udp_associate(
     };
     Reply::new(
         ReplyCode::Succeeded,
-        Some(Address::SocketAddress(udp_listener.local_addr())),
+        Some(Address::Socket(udp_listener.local_addr())),
     )
     .write_to(&mut stream)
     .await?;

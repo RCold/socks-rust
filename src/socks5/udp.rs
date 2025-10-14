@@ -3,13 +3,13 @@ use crate::socks5::Address;
 use log::debug;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use tokio::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net;
 use tokio::net::{ToSocketAddrs, UdpSocket};
-use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::AbortHandle;
 
 pub struct UdpHeader {
@@ -50,7 +50,7 @@ pub struct UdpSession {
     peer_addr: SocketAddr,
     tx: Sender<(Vec<u8>, SocketAddr)>,
     rx: Receiver<Vec<u8>>,
-    resolve_cache: HashMap<Address, SocketAddr>,
+    resolve_cache: Mutex<HashMap<String, IpAddr>>,
 }
 
 impl UdpSession {
@@ -63,7 +63,7 @@ impl UdpSession {
             peer_addr,
             tx,
             rx,
-            resolve_cache: HashMap::new(),
+            resolve_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -78,23 +78,21 @@ impl UdpSession {
         self.rx.recv().await
     }
 
-    pub async fn resolve_addr(&mut self, addr: &Address) -> io::Result<SocketAddr> {
-        Ok(*match self.resolve_cache.entry(addr.clone()) {
+    pub async fn resolve_addr(&self, domain: &str) -> io::Result<IpAddr> {
+        let mut resolve_cache = self.resolve_cache.lock().await;
+        Ok(*match resolve_cache.entry(String::from(domain)) {
             Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => match addr {
-                Address::SocketAddress(v) => entry.insert(*v),
-                Address::DomainAddress(domain, port) => {
-                    let v = net::lookup_host((domain.as_str(), *port))
-                        .await?
-                        .next()
-                        .ok_or(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "no addresses to send data to",
-                        ))?;
-                    debug!("domain name {domain} resolved to {}", v.ip());
-                    entry.insert(v)
-                }
-            },
+            Entry::Vacant(entry) => {
+                let v = net::lookup_host((domain, 0u16))
+                    .await?
+                    .next()
+                    .ok_or(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "no addresses to send data to",
+                    ))?;
+                debug!("domain name {domain} resolved to {}", v.ip());
+                entry.insert(v.ip())
+            }
         })
     }
 }
