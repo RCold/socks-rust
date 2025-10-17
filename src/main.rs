@@ -20,7 +20,7 @@ struct Args {
         long,
         short,
         default_value = "0.0.0.0",
-        value_name = "ADDRESS",
+        value_name = "ADDRESS"
     )]
     pub bind: String,
 

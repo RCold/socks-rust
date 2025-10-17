@@ -9,15 +9,19 @@ use crate::error::Error;
 use crate::socks5::tcp::{Reply, ReplyCode, Request};
 use crate::socks5::udp::{UdpHeader, UdpListener, UdpSession};
 use log::{debug, error, info};
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt;
 use std::fmt::Display;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
+use tokio::io;
 use tokio::io::{
     AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufStream, BufWriter,
 };
+use tokio::net;
 use tokio::net::{TcpStream, UdpSocket};
-use tokio::{io, select};
+use tokio::sync::mpsc;
 
 #[repr(u8)]
 enum Command {
@@ -191,47 +195,68 @@ async fn handle_remote_udp(
         .await?;
     writer.write_all(data).await?;
     writer.flush().await?;
-    session.send(writer.into_inner()).await?;
+    session.send(writer.into_inner());
     Ok(())
 }
 
 async fn handle_udp(mut session: UdpSession) -> Result<(), Error> {
+    let (client_tx, mut client_rx) = mpsc::channel(32);
+    let (remote_tx, mut remote_rx) = mpsc::channel::<(Vec<u8>, _)>(32);
     let remote_socket_v4 = UdpSocket::bind("0.0.0.0:0").await?;
     let remote_socket_v6 = UdpSocket::bind("[::]:0").await?;
-    let mut buf_v4 = [0u8; 65536];
-    let mut buf_v6 = [0u8; 65536];
-    loop {
-        select! {
-            v = session.recv() => {
-                match v {
-                    Some(data) => {
-                        let mut reader = BufReader::new(data.as_slice());
-                        let header = UdpHeader::read_from(&mut reader).await?;
-                        let remote_addr = match header.addr() {
-                            Address::Socket(v) => *v,
-                            Address::Domain(domain, port) => {
-                                let ip = session.resolve_addr(domain).await?;
-                                SocketAddr::new(ip, *port)
-                            }
-                        };
-                        let remote_socket = match remote_addr {
-                            SocketAddr::V4(_) => &remote_socket_v4,
-                            SocketAddr::V6(_) => &remote_socket_v6,
-                        };
-                        let mut data = Vec::new();
-                        reader.read_to_end(&mut data).await?;
-                        remote_socket.send_to(data.as_slice(), &remote_addr).await?;
+    tokio::spawn(async move {
+        let mut buf_v4 = [0u8; 65536];
+        let mut buf_v6 = [0u8; 65536];
+        loop {
+            tokio::select! {
+                v = session.recv() => {
+                    match v {
+                        Some(data) => client_tx.try_send(data).unwrap_or_default(),
+                        None => break,
                     }
-                    None => break,
+                }
+                Some((data, remote_addr)) = remote_rx.recv() => {
+                    match remote_addr {
+                        SocketAddr::V4(_) => &remote_socket_v4,
+                        SocketAddr::V6(_) => &remote_socket_v6,
+                    }.try_send_to(data.as_slice(), remote_addr).unwrap_or_default();
+                }
+                Ok((len, remote_addr)) = remote_socket_v4.recv_from(&mut buf_v4) => {
+                    handle_remote_udp(&session, &buf_v4[..len], remote_addr).await.unwrap_or_default();
+                }
+                Ok((len, remote_addr)) = remote_socket_v6.recv_from(&mut buf_v6) => {
+                    handle_remote_udp(&session, &buf_v6[..len], remote_addr).await.unwrap_or_default();
                 }
             }
-            Ok((len, remote_addr)) = remote_socket_v4.recv_from(&mut buf_v4) => {
-                handle_remote_udp(&session, &buf_v4[..len], remote_addr).await?;
-            }
-            Ok((len, remote_addr)) = remote_socket_v6.recv_from(&mut buf_v6) => {
-                handle_remote_udp(&session, &buf_v6[..len], remote_addr).await?;
-            }
         }
+    });
+    let mut resolve_cache = HashMap::new();
+    while let Some(data) = client_rx.recv().await {
+        let mut reader = BufReader::new(data.as_slice());
+        let header = UdpHeader::read_from(&mut reader).await?;
+        let remote_addr = match header.addr() {
+            Address::Socket(v) => *v,
+            Address::Domain(domain, port) => {
+                let ip = *match resolve_cache.entry(String::from(domain)) {
+                    Entry::Occupied(entry) => entry.into_mut(),
+                    Entry::Vacant(entry) => {
+                        let v = net::lookup_host((domain.as_str(), 0u16))
+                            .await?
+                            .next()
+                            .ok_or(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "no addresses to send data to",
+                            ))?;
+                        debug!("domain name {domain} resolved to {}", v.ip());
+                        entry.insert(v.ip())
+                    }
+                };
+                SocketAddr::new(ip, *port)
+            }
+        };
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).await?;
+        remote_tx.try_send((data, remote_addr)).unwrap_or_default();
     }
     Ok(())
 }
@@ -260,7 +285,7 @@ async fn handle_udp_associate(
     .await?;
     let mut buf = [0u8; 65536];
     loop {
-        select! {
+        tokio::select! {
             v = stream.read(&mut buf) => if v? == 0 { break },
             v = udp_listener.accept() => {
                 match v {
