@@ -1,6 +1,6 @@
 [package]
 name = "socks-rust"
-version = "0.2.6"
+version = "0.2.7"
 authors = ["Yeuham Wang <rcold@rcold.name>"]
 edition = "2024"
 license = "Apache-2.0"
